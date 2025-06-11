@@ -14,7 +14,7 @@ load_dotenv()
 
 # --- Configuration ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-VIKUNJA_API = os.getenv("VIKUNJA_API", "http://100.74.170.59:3456/api/v1")
+VIKUNJA_API = os.getenv("VIKUNJA_API", "http://yourvikunjaip:port/api/v1")
 USERNAME = os.getenv("VIKUNJA_USER")
 PASSWORD = os.getenv("VIKUNJA_PASSWORD")
 vikunja_token = None
