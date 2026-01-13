@@ -3,6 +3,7 @@ import logging
 import requests
 import re
 import json
+import traceback
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -20,6 +21,10 @@ CREDENTIALS_FILE = os.getenv("CREDENTIALS_FILE", "user_credentials.json")
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# Suppress httpx logs
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 # --- Constants ---
 TASKS_PER_PAGE = 5
@@ -44,13 +49,13 @@ def load_saved_credentials():
                 return json.load(f)
         return {}
     except json.JSONDecodeError as e:
-        logger.error(f"❌ Invalid JSON in credentials file: {e}")
+        logger.error(f"❌ Invalid JSON in credentials file: {e}\n{traceback.format_exc()}")
         return {}
     except PermissionError as e:
-        logger.error(f"❌ Permission denied reading credentials file: {e}")
+        logger.error(f"❌ Permission denied reading credentials file: {e}\n{traceback.format_exc()}")
         return {}
     except Exception as e:
-        logger.error(f"❌ Error loading credentials: {e}")
+        logger.error(f"❌ Error loading credentials: {e}\n{traceback.format_exc()}")
         return {}
 
 def save_credentials(chat_id, username, password):
@@ -68,9 +73,9 @@ def save_credentials(chat_id, username, password):
         os.chmod(CREDENTIALS_FILE, 0o600)
         logger.info(f"✅ Saved credentials for chat_id: {chat_id}")
     except PermissionError as e:
-        logger.error(f"❌ Permission denied writing credentials file: {e}")
+        logger.error(f"❌ Permission denied writing credentials file: {e}\n{traceback.format_exc()}")
     except Exception as e:
-        logger.error(f"❌ Error saving credentials: {e}")
+        logger.error(f"❌ Error saving credentials: {e}\n{traceback.format_exc()}")
 
 def delete_saved_credentials(chat_id):
     """Delete saved credentials for a user."""
@@ -91,9 +96,9 @@ def delete_saved_credentials(chat_id):
             
             logger.info(f"✅ Deleted credentials for chat_id: {chat_id}")
     except PermissionError as e:
-        logger.error(f"❌ Permission denied modifying credentials file: {e}")
+        logger.error(f"❌ Permission denied modifying credentials file: {e}\n{traceback.format_exc()}")
     except Exception as e:
-        logger.error(f"❌ Error deleting credentials: {e}")
+        logger.error(f"❌ Error deleting credentials: {e}\n{traceback.format_exc()}")
 
 def get_user_session(context: ContextTypes.DEFAULT_TYPE, chat_id=None):
     """Get or initialize the user session data."""
@@ -115,16 +120,15 @@ def get_user_session(context: ContextTypes.DEFAULT_TYPE, chat_id=None):
     
     return context.user_data
 
-def is_authenticated(context: ContextTypes.DEFAULT_TYPE):
+def is_authenticated(context: ContextTypes.DEFAULT_TYPE, chat_id=None):
     """Check if the user has authenticated."""
-    session = get_user_session(context)
+    session = get_user_session(context, chat_id)
     return session.get('vikunja_token') is not None
 
 def authenticate(context: ContextTypes.DEFAULT_TYPE, username=None, password=None, save=False, chat_id=None):
     """Authenticate with the Vikunja API and get a token for the user."""
-    session = get_user_session(context)
+    session = get_user_session(context, chat_id)
     
-    # Use provided credentials or stored credentials
     if username and password:
         session['username'] = username
         session['password'] = password
@@ -153,12 +157,12 @@ def authenticate(context: ContextTypes.DEFAULT_TYPE, username=None, password=Non
             logger.error(f"❌ Vikunja login failed for {username}: {response.status_code} - {response.text}")
             return False
     except requests.exceptions.RequestException as e:
-        logger.error(f"❌ Vikunja connection error: {e}")
+        logger.error(f"❌ Vikunja connection error: {e}\n{traceback.format_exc()}")
         return False
 
-def get_headers(context: ContextTypes.DEFAULT_TYPE):
+def get_headers(context: ContextTypes.DEFAULT_TYPE, chat_id=None):
     """Get authorization headers for the user."""
-    session = get_user_session(context)
+    session = get_user_session(context, chat_id)
     token = session.get('vikunja_token')
     if not token:
         return {}
@@ -183,7 +187,7 @@ def get_all_projects_cached(context: ContextTypes.DEFAULT_TYPE):
             return projects
         return []
     except requests.exceptions.RequestException as e:
-        logger.error(f"❌ Error fetching projects: {e}")
+        logger.error(f"❌ Error fetching projects: {e}\n{traceback.format_exc()}")
         return []
 
 def get_project_by_name(project_name, context: ContextTypes.DEFAULT_TYPE):
@@ -307,10 +311,20 @@ def parse_vikunja_task_format(task_text):
 def create_task(data, context: ContextTypes.DEFAULT_TYPE):
     """Constructs and sends a request to create a new task in Vikunja."""
     try:
+        # Handle priority - use default if None or not provided
+        priority = data.get("priority")
+        if priority is None:
+            priority = 3
+        
+        # Handle project_id - use default if None or not provided
+        project_id = data.get("project_id")
+        if project_id is None:
+            project_id = 1
+        
         payload = {
             "title": data["title"],
-            "priority": int(data.get("priority", 3)),
-            "project_id": int(data.get("project_id", 1)),
+            "priority": int(priority),
+            "project_id": int(project_id),
         }
         
         if data.get("due"):
@@ -331,52 +345,47 @@ def create_task(data, context: ContextTypes.DEFAULT_TYPE):
             return False, f"HTTP {response.status_code}: {response.text}"
             
     except Exception as e:
-        logger.error(f"❌ Error during task creation: {e}")
+        logger.error(f"❌ Error during task creation: {e}\n{traceback.format_exc()}")
         return False, f"Error: {e}"
 
 # --- Command Handlers: General ---
 
 async def handle_plain_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle non-command messages by automatically creating a task."""
-    if not is_authenticated(context):
+    chat_id = update.effective_chat.id
+    if not is_authenticated(context, chat_id):
         await update.message.reply_text(
             "⚠️ You need to log in first to create tasks.\n\n"
             "Use /login to authenticate with your Vikunja credentials."
         )
         return
     
-    # Parse the message as a task
     task_text = update.message.text
     parsed = parse_vikunja_task_format(task_text)
     
-    # Get default project (project_id = 1) or from parsed data
     project_id = 1
     if parsed.get("project"):
         project = get_project_by_name(parsed["project"], context)
         if project:
             project_id = project["id"]
     else:
-        # Try to get a valid default project
         projects = get_all_projects_cached(context)
         if projects and len(projects) > 0:
             project_id = projects[0]["id"]
     
-    # Create task data
     task_data = {
         "title": parsed["title"],
-        "priority": parsed.get("priority", 3),
+        "priority": parsed.get("priority") or 3,
         "project_id": project_id,
     }
     
     if parsed.get("due_date"):
         task_data["due"] = parsed["due_date"]
     
-    # Create the task
     success, result = create_task(task_data, context)
     
     if success:
         await update.message.reply_text(f"✅ Task created: *{parsed['title']}*", parse_mode="Markdown")
-        # Show the task list after creation
         await show_quick_task_list(update, context)
     else:
         await update.message.reply_text(f"❌ Failed to create task: {result}")
@@ -422,7 +431,7 @@ async def show_quick_task_list(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text(message, reply_markup=reply_markup, parse_mode="Markdown")
         
     except Exception as e:
-        logger.error(f"❌ Error showing quick task list: {e}")
+        logger.error(f"❌ Error showing quick task list: {e}\n{traceback.format_exc()}")
         await update.message.reply_text(f"❌ Error fetching tasks: {e}")
 
 async def handle_quick_done_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -430,19 +439,18 @@ async def handle_quick_done_callback(update: Update, context: ContextTypes.DEFAU
     query = update.callback_query
     await query.answer()
     
-    if not is_authenticated(context):
+    chat_id = update.effective_chat.id
+    if not is_authenticated(context, chat_id):
         await query.edit_message_text("❌ You need to log in first.")
         return
     
     callback_data = query.data
     
     if callback_data == "view_all_tasks":
-        # Redirect to full task list
         context.user_data['task_page'] = 0
         await show_task_page(update, context)
         return
     
-    # Extract task_id from callback_data (format: quick_done_TASKID)
     task_id = callback_data.split('_')[-1]
     
     # Mark task as done
@@ -462,7 +470,7 @@ async def handle_quick_done_callback(update: Update, context: ContextTypes.DEFAU
         else:
             await query.edit_message_text(f"❌ Failed to mark task as done ({response.status_code})")
     except Exception as e:
-        logger.error(f"❌ Error marking task as done: {e}")
+        logger.error(f"❌ Error marking task as done: {e}\n{traceback.format_exc()}")
         await query.edit_message_text(f"❌ Error: {e}")
 
 async def show_quick_task_list_new_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -507,19 +515,18 @@ async def show_quick_task_list_new_message(update: Update, context: ContextTypes
             await update.callback_query.message.reply_text(message, reply_markup=reply_markup, parse_mode="Markdown")
         
     except Exception as e:
-        logger.error(f"❌ Error showing updated task list: {e}")
+        logger.error(f"❌ Error showing updated task list: {e}\n{traceback.format_exc()}")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Start command - shows welcome message and instructions."""
     chat_id = update.effective_chat.id
     
-    # Try to load and authenticate with saved credentials if available
     session = get_user_session(context, chat_id)
-    if session.get('username') and session.get('password') and not is_authenticated(context):
-        authenticate(context)
+    if session.get('username') and session.get('password') and not is_authenticated(context, chat_id):
+        authenticate(context, chat_id=chat_id)
     
-    if is_authenticated(context):
-        session = get_user_session(context)
+    if is_authenticated(context, chat_id):
+        session = get_user_session(context, chat_id)
         await update.message.reply_text(
             f"🎯 Welcome to Vikunja Bot!\n\n"
             f"✅ You are logged in as: {session.get('username')}\n\n"
@@ -572,7 +579,7 @@ async def login_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await update.message.delete()
     except Exception as e:
-        logger.warning(f"Could not delete password message: {e}")
+        logger.warning(f"Could not delete password message: {e}\n{traceback.format_exc()}")
     
     await update.message.reply_text("🔄 Authenticating...")
     
@@ -618,16 +625,16 @@ async def logout(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Check connection status and authentication."""
-    if not is_authenticated(context):
+    chat_id = update.effective_chat.id
+    if not is_authenticated(context, chat_id):
         await update.message.reply_text(
             "❌ You are not logged in.\n\n"
             "Use /login to authenticate with your Vikunja credentials."
         )
         return
     
-    # Try to re-authenticate to verify credentials are still valid
-    if authenticate(context):
-        session = get_user_session(context)
+    if authenticate(context, chat_id=chat_id):
+        session = get_user_session(context, chat_id)
         await update.message.reply_text(
             f"✅ Connected to Vikunja successfully!\n"
             f"👤 Logged in as: {session.get('username')}"
@@ -647,14 +654,15 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def list_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Entry point for the task management conversation."""
-    if not is_authenticated(context):
+    chat_id = update.effective_chat.id
+    if not is_authenticated(context, chat_id):
         await update.message.reply_text(
             "❌ You need to log in first.\n\n"
             "Use /login to authenticate with your Vikunja credentials."
         )
         return ConversationHandler.END
     
-    if not authenticate(context):
+    if not authenticate(context, chat_id=chat_id):
         await update.message.reply_text("❌ Cannot connect to Vikunja.")
         return ConversationHandler.END
 
@@ -704,7 +712,7 @@ async def show_task_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(message, reply_markup=reply_markup, parse_mode="Markdown")
 
     except Exception as e:
-        logger.error(f"❌ Error fetching tasks: {e}")
+        logger.error(f"❌ Error fetching tasks: {e}\n{traceback.format_exc()}")
         await update.message.reply_text(f"❌ Error fetching tasks: {e}")
 
 async def task_list_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -758,7 +766,7 @@ async def show_task_edit_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.callback_query.edit_message_text(message, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
     except Exception as e:
-        logger.error(f"Error showing edit menu: {e}")
+        logger.error(f"Error showing edit menu: {e}\n{traceback.format_exc()}")
         await update.callback_query.edit_message_text(f"❌ Error: {e}")
 
 async def task_edit_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -788,6 +796,7 @@ async def task_edit_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             else:
                 await query.edit_message_text(f"❌ Operation failed ({response.status_code})")
         except Exception as e:
+            logger.error(f"❌ Error in task edit action: {e}\n{traceback.format_exc()}")
             await query.edit_message_text(f"❌ Error: {e}")
         return ConversationHandler.END
 
@@ -795,8 +804,6 @@ async def task_edit_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await query.edit_message_text("📅 Enter new due date (e.g., 'tomorrow', '2025-06-20') or 'none' to remove.")
         return TASK_EDIT_DUE
     
-    # ... Other edit actions would go here, returning new states ...
-
     return TASK_EDIT_VIEW
 
 async def handle_task_due_date_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -820,6 +827,7 @@ async def handle_task_due_date_update(update: Update, context: ContextTypes.DEFA
         else:
             await update.message.reply_text(f"❌ Failed to update due date ({response.status_code})")
     except Exception as e:
+        logger.error(f"❌ Error updating due date: {e}\n{traceback.format_exc()}")
         await update.message.reply_text(f"❌ Error: {e}")
 
     # Show the main list again
@@ -828,14 +836,15 @@ async def handle_task_due_date_update(update: Update, context: ContextTypes.DEFA
 
 # --- Command Handlers: Today's Tasks (/today) ---
 async def today_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_authenticated(context):
+    chat_id = update.effective_chat.id
+    if not is_authenticated(context, chat_id):
         await update.message.reply_text(
             "❌ You need to log in first.\n\n"
             "Use /login to authenticate with your Vikunja credentials."
         )
         return
     
-    if not authenticate(context):
+    if not authenticate(context, chat_id=chat_id):
         await update.message.reply_text("❌ Cannot connect to Vikunja.")
         return
 
@@ -847,7 +856,6 @@ async def today_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("📁 No projects found in Vikunja.")
             return
 
-        # Use the helper function to get active tasks filtered by today's date
         today_tasks_list = get_active_tasks_from_projects(context, date_filter=today_str)
 
         if not today_tasks_list:
@@ -862,6 +870,7 @@ async def today_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(message, parse_mode='Markdown')
 
     except Exception as e:
+        logger.error(f"❌ Error fetching today's tasks: {e}\n{traceback.format_exc()}")
         await update.message.reply_text(f"❌ Error fetching today's tasks: {e}")
 
 
@@ -907,15 +916,11 @@ def main():
     app.add_handler(login_handler)
     app.add_handler(CommandHandler("logout", logout))
     app.add_handler(CommandHandler("status", status))
-    # app.add_handler(CommandHandler("projects", list_projects)) # Add this back if you have the function
     app.add_handler(CommandHandler("today", today_tasks))
     app.add_handler(task_management_handler)
-    # Add other handlers like /newtask, /quicktask here if you have them
     
-    # Handler for quick done callbacks (must be before plain message handler)
     app.add_handler(CallbackQueryHandler(handle_quick_done_callback, pattern="^(quick_done_|view_all_tasks)"))
     
-    # Handler for plain messages (auto-create tasks) - should be last
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_plain_message))
 
     logger.info("✅ Bot is running...")
