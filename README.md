@@ -20,9 +20,12 @@ A lightweight Telegram bot to create and manage Vikunja tasks using quick syntax
    VIKUNJA_API=http://your-vikunja-url/api/v1
    ```
 3. Install dependencies:
-    ```pip install python-telegram-bot requests python-dotenv```
-4. Create a venv
-5. Run the bot:
+    ```
+    python -m venv .venv
+    source .venv/bin/activate
+    pip install -r requirements.txt
+    ```
+4. Run the bot:
     ```python vikunja_bot.py```
 
 ## Usage
