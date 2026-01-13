@@ -3,7 +3,6 @@ import logging
 import requests
 import re
 import json
-import asyncio
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -356,6 +355,11 @@ async def handle_plain_message(update: Update, context: ContextTypes.DEFAULT_TYP
         project = get_project_by_name(parsed["project"], context)
         if project:
             project_id = project["id"]
+    else:
+        # Try to get a valid default project
+        projects = get_all_projects_cached(context)
+        if projects and len(projects) > 0:
+            project_id = projects[0]["id"]
     
     # Create task data
     task_data = {
@@ -453,10 +457,7 @@ async def handle_quick_done_callback(update: Update, context: ContextTypes.DEFAU
             
             await query.edit_message_text(f"✅ Marked as done: *{task_title}*", parse_mode="Markdown")
             
-            # Show updated task list after a short delay
-            await asyncio.sleep(0.5)
-            
-            # Create a new message with updated task list
+            # Show updated task list in a new message
             await show_quick_task_list_new_message(update, context)
         else:
             await query.edit_message_text(f"❌ Failed to mark task as done ({response.status_code})")
