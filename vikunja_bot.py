@@ -220,7 +220,8 @@ def _format_display_date(due_date_str):
         # Vikunja's API format
         return datetime.strptime(due_date_str, '%Y-%m-%dT%H:%M:%SZ').strftime('%Y-%m-%d')
     except ValueError:
-        return due_date_str # Return as is if format is different
+        # Return None for invalid date formats to be consistent with hiding undefined values
+        return None
 
 def get_active_tasks_from_projects(context: ContextTypes.DEFAULT_TYPE, date_filter=None):
     """Helper function to fetch active (non-completed) tasks from all projects.
