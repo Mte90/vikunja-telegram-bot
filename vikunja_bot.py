@@ -215,12 +215,11 @@ def get_project_by_id(project_id, context: ContextTypes.DEFAULT_TYPE):
 def _format_display_date(due_date_str):
     """Helper to format due date strings for display."""
     if not due_date_str or not isinstance(due_date_str, str):
-        return "No due date"
+        return None
     try:
-        # Vikunja's API format
         return datetime.strptime(due_date_str, '%Y-%m-%dT%H:%M:%SZ').strftime('%Y-%m-%d')
     except ValueError:
-        return due_date_str # Return as is if format is different
+        return None
 
 def get_active_tasks_from_projects(context: ContextTypes.DEFAULT_TYPE, date_filter=None):
     """Helper function to fetch active (non-completed) tasks from all projects.
@@ -419,7 +418,10 @@ async def show_quick_task_list(update: Update, context: ContextTypes.DEFAULT_TYP
             
             # Task info line
             message += f"{i}. *{task.get('title', 'Untitled')}*\n"
-            message += f"   📁 {project_name} | 📅 {due_date}\n\n"
+            if due_date:
+                message += f"   📁 {project_name} | 📅 {due_date}\n\n"
+            else:
+                message += f"   📁 {project_name}\n\n"
             
             # Add inline button to mark as done
             keyboard.append([
@@ -501,7 +503,10 @@ async def show_quick_task_list_new_message(update: Update, context: ContextTypes
             due_date = _format_display_date(task.get('due_date'))
             
             message += f"{i}. *{task.get('title', 'Untitled')}*\n"
-            message += f"   📁 {project_name} | 📅 {due_date}\n\n"
+            if due_date:
+                message += f"   📁 {project_name} | 📅 {due_date}\n\n"
+            else:
+                message += f"   📁 {project_name}\n\n"
             
             keyboard.append([
                 InlineKeyboardButton(
@@ -751,15 +756,23 @@ async def show_task_edit_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         task = response.json()
         project = get_project_by_id(task.get("project_id"), context)
+        due_date = _format_display_date(task.get('due_date'))
+        repeat_after = task.get('repeat_after')
         
-        message = (
-            f"📝 *Task:* {task.get('title', 'Untitled')}\n"
-            f"------------------------------------\n"
-            f"📁 *Project:* {project.get('title', 'Unknown') if project else 'Unknown'}\n"
-            f"⭐ *Priority:* {task.get('priority', 'N/A')}\n"
-            f"📅 *Due:* {_format_display_date(task.get('due_date'))}\n"
-            f"🔁 *Repeat:* {task.get('repeat_after', 'None')}"
-        )
+        message_parts = [
+            f"📝 *Task:* {task.get('title', 'Untitled')}",
+            "------------------------------------",
+            f"📁 *Project:* {project.get('title', 'Unknown') if project else 'Unknown'}",
+            f"⭐ *Priority:* {task.get('priority', 'N/A')}"
+        ]
+        
+        if due_date:
+            message_parts.append(f"📅 *Due:* {due_date}")
+        
+        if repeat_after not in (None, ''):
+            message_parts.append(f"🔁 *Repeat:* {repeat_after}")
+        
+        message = '\n'.join(message_parts)
 
         keyboard = [
             [InlineKeyboardButton("✅ Mark Done", callback_data="task_edit_done")],
