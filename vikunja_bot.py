@@ -43,6 +43,12 @@ def load_saved_credentials():
             with open(CREDENTIALS_FILE, 'r') as f:
                 return json.load(f)
         return {}
+    except json.JSONDecodeError as e:
+        logger.error(f"❌ Invalid JSON in credentials file: {e}")
+        return {}
+    except PermissionError as e:
+        logger.error(f"❌ Permission denied reading credentials file: {e}")
+        return {}
     except Exception as e:
         logger.error(f"❌ Error loading credentials: {e}")
         return {}
@@ -57,7 +63,12 @@ def save_credentials(chat_id, username, password):
         }
         with open(CREDENTIALS_FILE, 'w') as f:
             json.dump(credentials, f, indent=2)
+        
+        # Set restrictive file permissions (owner read/write only)
+        os.chmod(CREDENTIALS_FILE, 0o600)
         logger.info(f"✅ Saved credentials for chat_id: {chat_id}")
+    except PermissionError as e:
+        logger.error(f"❌ Permission denied writing credentials file: {e}")
     except Exception as e:
         logger.error(f"❌ Error saving credentials: {e}")
 
@@ -67,9 +78,20 @@ def delete_saved_credentials(chat_id):
         credentials = load_saved_credentials()
         if str(chat_id) in credentials:
             del credentials[str(chat_id)]
-            with open(CREDENTIALS_FILE, 'w') as f:
-                json.dump(credentials, f, indent=2)
+            
+            # If no credentials remain, remove the file
+            if not credentials:
+                if os.path.exists(CREDENTIALS_FILE):
+                    os.remove(CREDENTIALS_FILE)
+                    logger.info(f"✅ Removed empty credentials file")
+            else:
+                with open(CREDENTIALS_FILE, 'w') as f:
+                    json.dump(credentials, f, indent=2)
+                os.chmod(CREDENTIALS_FILE, 0o600)
+            
             logger.info(f"✅ Deleted credentials for chat_id: {chat_id}")
+    except PermissionError as e:
+        logger.error(f"❌ Permission denied modifying credentials file: {e}")
     except Exception as e:
         logger.error(f"❌ Error deleting credentials: {e}")
 

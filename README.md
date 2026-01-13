@@ -52,4 +52,8 @@ Your credentials are securely saved to a local file (`user_credentials.json`) wh
 - Persistent sessions across bot restarts
 - No need to log in every time you use the bot
 
+The credentials file is protected with restrictive permissions (600 - owner read/write only).
+
+**Security Note**: Credentials are stored in plain text in the JSON file. Ensure the bot runs in a secure environment and the credentials file is not accessible to unauthorized users.
+
 To remove your saved credentials, use the `/logout` command.
