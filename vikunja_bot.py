@@ -758,6 +758,7 @@ async def show_task_edit_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
         task = response.json()
         project = get_project_by_id(task.get("project_id"), context)
         due_date = _format_display_date(task.get('due_date'))
+        repeat_after = task.get('repeat_after')
         
         message = (
             f"📝 *Task:* {task.get('title', 'Untitled')}\n"
@@ -769,7 +770,11 @@ async def show_task_edit_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
         if due_date:
             message += f"📅 *Due:* {due_date}\n"
         
-        message += f"🔁 *Repeat:* {task.get('repeat_after', 'None')}"
+        if repeat_after:
+            message += f"🔁 *Repeat:* {repeat_after}"
+        else:
+            # Remove trailing newline if there's no repeat field
+            message = message.rstrip('\n')
 
         keyboard = [
             [InlineKeyboardButton("✅ Mark Done", callback_data="task_edit_done")],
