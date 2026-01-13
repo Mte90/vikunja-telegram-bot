@@ -760,21 +760,22 @@ async def show_task_edit_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
         due_date = _format_display_date(task.get('due_date'))
         repeat_after = task.get('repeat_after')
         
-        message = (
-            f"📝 *Task:* {task.get('title', 'Untitled')}\n"
-            f"------------------------------------\n"
-            f"📁 *Project:* {project.get('title', 'Unknown') if project else 'Unknown'}\n"
-            f"⭐ *Priority:* {task.get('priority', 'N/A')}\n"
-        )
+        # Build message with required fields
+        message_parts = [
+            f"📝 *Task:* {task.get('title', 'Untitled')}",
+            "------------------------------------",
+            f"📁 *Project:* {project.get('title', 'Unknown') if project else 'Unknown'}",
+            f"⭐ *Priority:* {task.get('priority', 'N/A')}"
+        ]
         
+        # Add optional fields only if they exist
         if due_date:
-            message += f"📅 *Due:* {due_date}\n"
+            message_parts.append(f"📅 *Due:* {due_date}")
         
         if repeat_after:
-            message += f"🔁 *Repeat:* {repeat_after}"
-        else:
-            # Remove trailing newline if there's no repeat field
-            message = message.rstrip('\n')
+            message_parts.append(f"🔁 *Repeat:* {repeat_after}")
+        
+        message = '\n'.join(message_parts)
 
         keyboard = [
             [InlineKeyboardButton("✅ Mark Done", callback_data="task_edit_done")],
