@@ -772,7 +772,7 @@ async def show_task_edit_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
         if due_date:
             message_parts.append(f"📅 *Due:* {due_date}")
         
-        if repeat_after:
+        if repeat_after is not None:
             message_parts.append(f"🔁 *Repeat:* {repeat_after}")
         
         message = '\n'.join(message_parts)
