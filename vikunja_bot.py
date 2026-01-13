@@ -15,9 +15,9 @@ load_dotenv()
 # --- Configuration ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 VIKUNJA_API = os.getenv("VIKUNJA_API", "http://yourvikunjaip:port/api/v1")
-USERNAME = os.getenv("VIKUNJA_USER")
-PASSWORD = os.getenv("VIKUNJA_PASSWORD")
-vikunja_token = None
+# Legacy support - can still use env vars for single user
+DEFAULT_USERNAME = os.getenv("VIKUNJA_USER")
+DEFAULT_PASSWORD = os.getenv("VIKUNJA_PASSWORD")
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -27,48 +27,89 @@ TASKS_PER_PAGE = 5
 PROJECT_CACHE_SECONDS = 60 # Cache projects for 60 seconds
 
 # --- Conversation States ---
+# For /login
+(LOGIN_USERNAME, LOGIN_PASSWORD) = range(2)
 # For /newtask and /quicktask
-(TITLE, PRIORITY, LABEL, PROJECT, DUEDATE, REPEAT, CONFIRM) = range(7)
+(TITLE, PRIORITY, LABEL, PROJECT, DUEDATE, REPEAT, CONFIRM) = range(7, 14)
 # For /tasks management
 (TASK_LIST_VIEW, TASK_EDIT_VIEW, TASK_EDIT_PROJECT, 
- TASK_EDIT_PRIORITY, TASK_EDIT_DUE, TASK_EDIT_LABELS, TASK_EDIT_REPEAT) = range(7, 14)
+ TASK_EDIT_PRIORITY, TASK_EDIT_DUE, TASK_EDIT_LABELS, TASK_EDIT_REPEAT) = range(14, 21)
 
 # --- Vikunja API Functions ---
 
-def authenticate():
-    """Authenticate with the Vikunja API and get a token."""
-    global vikunja_token
+def get_user_session(context: ContextTypes.DEFAULT_TYPE):
+    """Get or initialize the user session data."""
+    if 'vikunja_token' not in context.user_data:
+        context.user_data['vikunja_token'] = None
+    if 'username' not in context.user_data:
+        context.user_data['username'] = None
+    if 'password' not in context.user_data:
+        context.user_data['password'] = None
+    return context.user_data
+
+def is_authenticated(context: ContextTypes.DEFAULT_TYPE):
+    """Check if the user has authenticated."""
+    session = get_user_session(context)
+    return session.get('vikunja_token') is not None
+
+def authenticate(context: ContextTypes.DEFAULT_TYPE, username=None, password=None):
+    """Authenticate with the Vikunja API and get a token for the user."""
+    session = get_user_session(context)
+    
+    # Use provided credentials or stored credentials
+    if username and password:
+        session['username'] = username
+        session['password'] = password
+    else:
+        username = session.get('username') or DEFAULT_USERNAME
+        password = session.get('password') or DEFAULT_PASSWORD
+    
+    if not username or not password:
+        logger.error("❌ No credentials available for authentication")
+        return False
+    
     try:
         response = requests.post(f"{VIKUNJA_API}/login", json={
-            "username": USERNAME,
-            "password": PASSWORD
+            "username": username,
+            "password": password
         }, timeout=10)
         if response.status_code == 200:
-            vikunja_token = response.json()["token"]
-            logger.info("✅ Successfully authenticated with Vikunja")
+            session['vikunja_token'] = response.json()["token"]
+            session['username'] = username
+            session['password'] = password
+            logger.info(f"✅ Successfully authenticated user: {username}")
             return True
         else:
-            logger.error(f"❌ Vikunja login failed: {response.status_code} - {response.text}")
+            logger.error(f"❌ Vikunja login failed for {username}: {response.status_code} - {response.text}")
             return False
     except requests.exceptions.RequestException as e:
         logger.error(f"❌ Vikunja connection error: {e}")
         return False
 
-def get_headers():
-    return {"Authorization": f"Bearer {vikunja_token}"}
+def get_headers(context: ContextTypes.DEFAULT_TYPE):
+    """Get authorization headers for the user."""
+    session = get_user_session(context)
+    token = session.get('vikunja_token')
+    if not token:
+        return {}
+    return {"Authorization": f"Bearer {token}"}
 
 def get_all_projects_cached(context: ContextTypes.DEFAULT_TYPE):
     """Get all projects, using a short-term cache to avoid repeated API calls."""
     now = datetime.now()
-    cache = context.bot_data.get('project_cache', {})
-    if cache and (now - cache['timestamp']) < timedelta(seconds=PROJECT_CACHE_SECONDS):
+    # Use user-specific cache
+    if 'project_cache' not in context.user_data:
+        context.user_data['project_cache'] = {}
+    
+    cache = context.user_data['project_cache']
+    if cache and (now - cache.get('timestamp', datetime.min)) < timedelta(seconds=PROJECT_CACHE_SECONDS):
         return cache['data']
 
     try:
-        response = requests.get(f"{VIKUNJA_API}/projects", headers=get_headers(), timeout=10)
+        response = requests.get(f"{VIKUNJA_API}/projects", headers=get_headers(context), timeout=10)
         if response.status_code == 200:
             projects = response.json()
-            context.bot_data['project_cache'] = {'data': projects, 'timestamp': now}
+            context.user_data['project_cache'] = {'data': projects, 'timestamp': now}
             return projects
         return []
     except requests.exceptions.RequestException as e:
@@ -161,7 +202,7 @@ def parse_vikunja_task_format(task_text):
     parsed_data["title"] = ' '.join(task_text.split())
     return parsed_data
 
-def create_task(data):
+def create_task(data, context: ContextTypes.DEFAULT_TYPE):
     """Constructs and sends a request to create a new task in Vikunja."""
     try:
         payload = {
@@ -178,7 +219,7 @@ def create_task(data):
             payload["label_ids"] = data["label_ids"]
 
         logger.info(f"🔍 Creating task with payload: {payload}")
-        response = requests.put(f"{VIKUNJA_API}/projects/{payload['project_id']}/tasks", headers=get_headers(), json=payload, timeout=10)
+        response = requests.put(f"{VIKUNJA_API}/projects/{payload['project_id']}/tasks", headers=get_headers(context), json=payload, timeout=10)
         
         if response.status_code in [200, 201]:
             logger.info(f"✅ Task created successfully: {response.json().get('title')}")
@@ -194,25 +235,123 @@ def create_task(data):
 # --- Command Handlers: General ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not authenticate():
-        await update.message.reply_text("⚠️ Cannot connect to Vikunja. Please check the configuration.")
-        return
+    """Start command - shows welcome message and instructions."""
+    # Try to authenticate with default credentials if available
+    if DEFAULT_USERNAME and DEFAULT_PASSWORD and not is_authenticated(context):
+        authenticate(context, DEFAULT_USERNAME, DEFAULT_PASSWORD)
+    
+    if is_authenticated(context):
+        session = get_user_session(context)
+        await update.message.reply_text(
+            f"🎯 Welcome to Vikunja Bot!\n\n"
+            f"✅ You are logged in as: {session.get('username')}\n\n"
+            "Commands:\n"
+            "/newtask - Create a new task with a guided process.\n"
+            "/quicktask - Create a task using Vikunja's quick-add syntax.\n"
+            "/tasks - View, edit, or complete your active tasks.\n"
+            "/today - Show all tasks due today.\n"
+            "/projects - List all available projects.\n"
+            "/status - Check Vikunja API connection status.\n"
+            "/logout - Log out from your Vikunja account."
+        )
+    else:
+        await update.message.reply_text(
+            "🎯 Welcome to Vikunja Bot!\n\n"
+            "⚠️ You need to log in first.\n\n"
+            "Use /login to authenticate with your Vikunja credentials.\n\n"
+            "Commands after login:\n"
+            "/tasks - View and manage tasks\n"
+            "/today - Show tasks due today\n"
+            "/status - Check connection status"
+        )
+
+async def login_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start the login conversation."""
     await update.message.reply_text(
-        "🎯 Welcome to Vikunja Bot!\n\n"
-        "Commands:\n"
-        "/newtask - Create a new task with a guided process.\n"
-        "/quicktask - Create a task using Vikunja's quick-add syntax.\n"
-        "/tasks - View, edit, or complete your active tasks.\n"
-        "/today - Show all tasks due today.\n"
-        "/projects - List all available projects.\n"
-        "/status - Check Vikunja API connection status."
+        "🔐 Let's log you in to Vikunja!\n\n"
+        "Please enter your Vikunja username:\n\n"
+        "Use /cancel to abort."
+    )
+    return LOGIN_USERNAME
+
+async def login_username(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle username input during login."""
+    username = update.message.text.strip()
+    context.user_data['temp_username'] = username
+    await update.message.reply_text(
+        f"👤 Username: {username}\n\n"
+        "Now please enter your Vikunja password:"
+    )
+    return LOGIN_PASSWORD
+
+async def login_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle password input and complete login."""
+    password = update.message.text.strip()
+    username = context.user_data.get('temp_username')
+    
+    # Delete the message containing the password for security
+    try:
+        await update.message.delete()
+    except:
+        pass
+    
+    await update.message.reply_text("🔄 Authenticating...")
+    
+    if authenticate(context, username, password):
+        # Clear temporary data
+        context.user_data.pop('temp_username', None)
+        await update.message.reply_text(
+            f"✅ Successfully logged in as {username}!\n\n"
+            "You can now use:\n"
+            "/tasks - View and manage tasks\n"
+            "/today - Show tasks due today\n"
+            "/status - Check connection status\n"
+            "/logout - Log out"
+        )
+        return ConversationHandler.END
+    else:
+        context.user_data.pop('temp_username', None)
+        await update.message.reply_text(
+            "❌ Authentication failed. Please check your credentials and try again.\n\n"
+            "Use /login to try again."
+        )
+        return ConversationHandler.END
+
+async def logout(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Log out the user."""
+    session = get_user_session(context)
+    username = session.get('username', 'Unknown')
+    
+    # Clear all user data
+    context.user_data.clear()
+    
+    await update.message.reply_text(
+        f"👋 Logged out successfully!\n\n"
+        f"Previous user: {username}\n\n"
+        "Use /login to log in again."
     )
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if authenticate():
-        await update.message.reply_text("✅ Connected to Vikunja successfully!")
+    """Check connection status and authentication."""
+    if not is_authenticated(context):
+        await update.message.reply_text(
+            "❌ You are not logged in.\n\n"
+            "Use /login to authenticate with your Vikunja credentials."
+        )
+        return
+    
+    # Try to re-authenticate to verify credentials are still valid
+    if authenticate(context):
+        session = get_user_session(context)
+        await update.message.reply_text(
+            f"✅ Connected to Vikunja successfully!\n"
+            f"👤 Logged in as: {session.get('username')}"
+        )
     else:
-        await update.message.reply_text("❌ Cannot connect to Vikunja. Check your configuration.")
+        await update.message.reply_text(
+            "❌ Cannot connect to Vikunja. Your session may have expired.\n\n"
+            "Use /login to authenticate again."
+        )
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❌ Action canceled.")
@@ -223,7 +362,14 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def list_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Entry point for the task management conversation."""
-    if not authenticate():
+    if not is_authenticated(context):
+        await update.message.reply_text(
+            "❌ You need to log in first.\n\n"
+            "Use /login to authenticate with your Vikunja credentials."
+        )
+        return ConversationHandler.END
+    
+    if not authenticate(context):
         await update.message.reply_text("❌ Cannot connect to Vikunja.")
         return ConversationHandler.END
 
@@ -240,7 +386,7 @@ async def show_task_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
         all_tasks = []
         projects = get_all_projects_cached(context)
         for project in projects:
-            response = requests.get(f"{VIKUNJA_API}/projects/{project['id']}/tasks", headers=get_headers(), timeout=10)
+            response = requests.get(f"{VIKUNJA_API}/projects/{project['id']}/tasks", headers=get_headers(context), timeout=10)
             if response.status_code == 200:
                 tasks_data = response.json()
                 # Ensure we handle both list and dict responses for tasks
@@ -310,7 +456,7 @@ async def show_task_edit_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
     """Displays the action menu for a selected task."""
     task_id = context.user_data['selected_task_id']
     try:
-        response = requests.get(f"{VIKUNJA_API}/tasks/{task_id}", headers=get_headers(), timeout=10)
+        response = requests.get(f"{VIKUNJA_API}/tasks/{task_id}", headers=get_headers(context), timeout=10)
         if response.status_code != 200:
             await update.callback_query.edit_message_text("❌ Failed to fetch task details.")
             return
@@ -357,10 +503,10 @@ async def task_edit_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         endpoint = f"{VIKUNJA_API}/tasks/{task_id}"
         try:
             if action == "done":
-                response = requests.post(endpoint, headers=get_headers(), json={"done": True}, timeout=10)
+                response = requests.post(endpoint, headers=get_headers(context), json={"done": True}, timeout=10)
                 success_msg = "✅ Task marked as done!"
             else: # delete
-                response = requests.delete(endpoint, headers=get_headers(), timeout=10)
+                response = requests.delete(endpoint, headers=get_headers(context), timeout=10)
                 success_msg = "🗑️ Task deleted!"
 
             if response.status_code in [200, 204]:
@@ -394,7 +540,7 @@ async def handle_task_due_date_update(update: Update, context: ContextTypes.DEFA
             return TASK_EDIT_DUE
 
     try:
-        response = requests.post(f"{VIKUNJA_API}/tasks/{task_id}", headers=get_headers(), json=payload, timeout=10)
+        response = requests.post(f"{VIKUNJA_API}/tasks/{task_id}", headers=get_headers(context), json=payload, timeout=10)
         if response.status_code in [200, 204]:
             await update.message.reply_text(f"✅ Due date updated successfully!")
         else:
@@ -408,7 +554,14 @@ async def handle_task_due_date_update(update: Update, context: ContextTypes.DEFA
 
 # --- Command Handlers: Today's Tasks (/today) ---
 async def today_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not authenticate():
+    if not is_authenticated(context):
+        await update.message.reply_text(
+            "❌ You need to log in first.\n\n"
+            "Use /login to authenticate with your Vikunja credentials."
+        )
+        return
+    
+    if not authenticate(context):
         await update.message.reply_text("❌ Cannot connect to Vikunja.")
         return
 
@@ -424,7 +577,7 @@ async def today_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         today_tasks_list = []
         for project in projects:
-            response = requests.get(f"{VIKUNJA_API}/projects/{project['id']}/tasks", headers=get_headers(), params={'due_date': today_str})
+            response = requests.get(f"{VIKUNJA_API}/projects/{project['id']}/tasks", headers=get_headers(context), params={'due_date': today_str})
             if response.status_code == 200:
                  tasks = response.json()
                  today_tasks_list.extend([t for t in tasks if not t.get('done')])
@@ -446,13 +599,26 @@ async def today_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- Main Application Setup ---
 def main():
-    if not all([TELEGRAM_TOKEN, USERNAME, PASSWORD]):
-        logger.critical("❌ Missing essential environment variables (TELEGRAM_TOKEN, VIKUNJA_USER, VIKUNJA_PASSWORD)")
+    if not TELEGRAM_TOKEN:
+        logger.critical("❌ Missing TELEGRAM_TOKEN environment variable")
         return
     
     logger.info(f"🚀 Starting bot with Vikunja API: {VIKUNJA_API}")
     
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+
+    # Conversation handler for login
+    login_handler = ConversationHandler(
+        entry_points=[CommandHandler("login", login_start)],
+        states={
+            LOGIN_USERNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, login_username)],
+            LOGIN_PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, login_password)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+        per_user=True,
+        per_chat=True,
+        per_message=False
+    )
 
     # Conversation handler for listing and managing tasks (/tasks)
     task_management_handler = ConversationHandler(
@@ -464,10 +630,14 @@ def main():
             # Add more states for editing other fields (priority, project) here
         },
         fallbacks=[CommandHandler("cancel", cancel)],
-        per_message=False # Allows different users to have conversations at the same time
+        per_user=True,
+        per_chat=True,
+        per_message=False
     )
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(login_handler)
+    app.add_handler(CommandHandler("logout", logout))
     app.add_handler(CommandHandler("status", status))
     # app.add_handler(CommandHandler("projects", list_projects)) # Add this back if you have the function
     app.add_handler(CommandHandler("today", today_tasks))
