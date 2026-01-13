@@ -102,7 +102,7 @@ def get_all_projects_cached(context: ContextTypes.DEFAULT_TYPE):
         context.user_data['project_cache'] = {}
     
     cache = context.user_data['project_cache']
-    if cache and (now - cache.get('timestamp', datetime.min)) < timedelta(seconds=PROJECT_CACHE_SECONDS):
+    if cache and 'timestamp' in cache and (now - cache['timestamp']) < timedelta(seconds=PROJECT_CACHE_SECONDS):
         return cache['data']
 
     try:
@@ -141,6 +141,38 @@ def _format_display_date(due_date_str):
         return datetime.strptime(due_date_str, '%Y-%m-%dT%H:%M:%SZ').strftime('%Y-%m-%d')
     except ValueError:
         return due_date_str # Return as is if format is different
+
+def get_active_tasks_from_projects(context: ContextTypes.DEFAULT_TYPE, date_filter=None):
+    """Helper function to fetch active (non-completed) tasks from all projects.
+    
+    Args:
+        context: The user context
+        date_filter: Optional date string in YYYY-MM-DD format to filter tasks by due date
+    
+    Returns:
+        List of active tasks
+    """
+    all_tasks = []
+    projects = get_all_projects_cached(context)
+    
+    for project in projects:
+        params = {'due_date': date_filter} if date_filter else {}
+        response = requests.get(
+            f"{VIKUNJA_API}/projects/{project['id']}/tasks", 
+            headers=get_headers(context), 
+            params=params,
+            timeout=10
+        )
+        if response.status_code == 200:
+            tasks_data = response.json()
+            # Ensure we handle both list and dict responses for tasks
+            tasks = tasks_data if isinstance(tasks_data, list) else tasks_data.get('tasks', [])
+            for task in tasks:
+                task['project_id'] = project['id']  # Ensure project context
+            all_tasks.extend(tasks)
+    
+    # Filter to only active (non-completed) tasks
+    return [t for t in all_tasks if isinstance(t, dict) and not t.get('done', False)]
 
 def parse_vikunja_task_format(task_text):
     """Parse Vikunja's special formatting for tasks to extract details."""
@@ -292,8 +324,8 @@ async def login_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Delete the message containing the password for security
     try:
         await update.message.delete()
-    except:
-        pass
+    except Exception as e:
+        logger.warning(f"Could not delete password message: {e}")
     
     await update.message.reply_text("🔄 Authenticating...")
     
@@ -382,20 +414,9 @@ async def show_task_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
     page = context.user_data.get('task_page', 0)
     
     try:
-        # Fetch all tasks and filter locally
-        all_tasks = []
-        projects = get_all_projects_cached(context)
-        for project in projects:
-            response = requests.get(f"{VIKUNJA_API}/projects/{project['id']}/tasks", headers=get_headers(context), timeout=10)
-            if response.status_code == 200:
-                tasks_data = response.json()
-                # Ensure we handle both list and dict responses for tasks
-                tasks = tasks_data if isinstance(tasks_data, list) else tasks_data.get('tasks', [])
-                for task in tasks:
-                    task['project_id'] = project['id'] # Ensure project context
-                all_tasks.extend(tasks)
-
-        active_tasks = [t for t in all_tasks if isinstance(t, dict) and not t.get('done', False)]
+        # Fetch all active tasks using helper function
+        active_tasks = get_active_tasks_from_projects(context)
+        
         if not active_tasks:
             await update.message.reply_text("✅ No active tasks found!")
             return
@@ -568,19 +589,13 @@ async def today_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     today_str = datetime.now().strftime('%Y-%m-%d')
     
     try:
-        # Simplified: Use the dedicated filtered endpoint if available, otherwise filter manually
-        # This example will continue to filter manually as it's more universally compatible
         projects = get_all_projects_cached(context)
         if not projects:
             await update.message.reply_text("📁 No projects found in Vikunja.")
             return
 
-        today_tasks_list = []
-        for project in projects:
-            response = requests.get(f"{VIKUNJA_API}/projects/{project['id']}/tasks", headers=get_headers(context), params={'due_date': today_str})
-            if response.status_code == 200:
-                 tasks = response.json()
-                 today_tasks_list.extend([t for t in tasks if not t.get('done')])
+        # Use the helper function to get active tasks filtered by today's date
+        today_tasks_list = get_active_tasks_from_projects(context, date_filter=today_str)
 
         if not today_tasks_list:
             await update.message.reply_text("👍 No tasks due today!")
