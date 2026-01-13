@@ -217,10 +217,8 @@ def _format_display_date(due_date_str):
     if not due_date_str or not isinstance(due_date_str, str):
         return None
     try:
-        # Vikunja's API format
         return datetime.strptime(due_date_str, '%Y-%m-%dT%H:%M:%SZ').strftime('%Y-%m-%d')
     except ValueError:
-        # Return None for invalid date formats to be consistent with hiding undefined values
         return None
 
 def get_active_tasks_from_projects(context: ContextTypes.DEFAULT_TYPE, date_filter=None):
@@ -761,7 +759,6 @@ async def show_task_edit_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
         due_date = _format_display_date(task.get('due_date'))
         repeat_after = task.get('repeat_after')
         
-        # Build message with required fields
         message_parts = [
             f"📝 *Task:* {task.get('title', 'Untitled')}",
             "------------------------------------",
@@ -769,12 +766,9 @@ async def show_task_edit_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
             f"⭐ *Priority:* {task.get('priority', 'N/A')}"
         ]
         
-        # Add optional fields only if they exist and are meaningful
         if due_date:
             message_parts.append(f"📅 *Due:* {due_date}")
         
-        # Show repeat_after if it exists and is not None or empty string
-        # Note: 0 is shown as it could be a valid repeat interval
         if repeat_after not in (None, ''):
             message_parts.append(f"🔁 *Repeat:* {repeat_after}")
         
