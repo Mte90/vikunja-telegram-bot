@@ -768,11 +768,13 @@ async def show_task_edit_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
             f"⭐ *Priority:* {task.get('priority', 'N/A')}"
         ]
         
-        # Add optional fields only if they exist
+        # Add optional fields only if they exist and are meaningful
         if due_date:
             message_parts.append(f"📅 *Due:* {due_date}")
         
-        if repeat_after is not None:
+        # Show repeat_after if it exists and is not None or empty string
+        # Note: 0 is shown as it could be a valid repeat interval
+        if repeat_after not in (None, ''):
             message_parts.append(f"🔁 *Repeat:* {repeat_after}")
         
         message = '\n'.join(message_parts)
