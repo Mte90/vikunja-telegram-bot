@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import os
 import logging
 import requests
@@ -123,6 +124,11 @@ def get_user_session(context: ContextTypes.DEFAULT_TYPE, chat_id=None):
 def is_authenticated(context: ContextTypes.DEFAULT_TYPE, chat_id=None):
     """Check if the user has authenticated."""
     session = get_user_session(context, chat_id)
+    
+    # If no token but we have credentials, try to authenticate automatically
+    if not session.get('vikunja_token') and session.get('username') and session.get('password'):
+        authenticate(context, chat_id=chat_id)
+    
     return session.get('vikunja_token') is not None
 
 def authenticate(context: ContextTypes.DEFAULT_TYPE, username=None, password=None, save=False, chat_id=None):
