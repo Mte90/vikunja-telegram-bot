@@ -3,6 +3,7 @@ import logging
 import requests
 import re
 import json
+import asyncio
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -335,6 +336,177 @@ def create_task(data, context: ContextTypes.DEFAULT_TYPE):
         return False, f"Error: {e}"
 
 # --- Command Handlers: General ---
+
+async def handle_plain_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle non-command messages by automatically creating a task."""
+    if not is_authenticated(context):
+        await update.message.reply_text(
+            "⚠️ You need to log in first to create tasks.\n\n"
+            "Use /login to authenticate with your Vikunja credentials."
+        )
+        return
+    
+    # Parse the message as a task
+    task_text = update.message.text
+    parsed = parse_vikunja_task_format(task_text)
+    
+    # Get default project (project_id = 1) or from parsed data
+    project_id = 1
+    if parsed.get("project"):
+        project = get_project_by_name(parsed["project"], context)
+        if project:
+            project_id = project["id"]
+    
+    # Create task data
+    task_data = {
+        "title": parsed["title"],
+        "priority": parsed.get("priority", 3),
+        "project_id": project_id,
+    }
+    
+    if parsed.get("due_date"):
+        task_data["due"] = parsed["due_date"]
+    
+    # Create the task
+    success, result = create_task(task_data, context)
+    
+    if success:
+        await update.message.reply_text(f"✅ Task created: *{parsed['title']}*", parse_mode="Markdown")
+        # Show the task list after creation
+        await show_quick_task_list(update, context)
+    else:
+        await update.message.reply_text(f"❌ Failed to create task: {result}")
+
+async def show_quick_task_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show a quick list of active tasks with inline buttons to mark as done."""
+    try:
+        # Fetch active tasks
+        active_tasks = get_active_tasks_from_projects(context)
+        
+        if not active_tasks:
+            await update.message.reply_text("✅ No active tasks!")
+            return
+        
+        # Show first 5 tasks with quick action buttons
+        display_tasks = active_tasks[:5]
+        
+        message = "📋 *Your Active Tasks*\n\n"
+        keyboard = []
+        
+        for i, task in enumerate(display_tasks, 1):
+            project = get_project_by_id(task.get("project_id"), context)
+            project_name = project.get('title', 'Unknown') if project else 'Unknown'
+            due_date = _format_display_date(task.get('due_date'))
+            
+            # Task info line
+            message += f"{i}. *{task.get('title', 'Untitled')}*\n"
+            message += f"   📁 {project_name} | 📅 {due_date}\n\n"
+            
+            # Add inline button to mark as done
+            keyboard.append([
+                InlineKeyboardButton(
+                    f"✅ Mark #{i} Done", 
+                    callback_data=f"quick_done_{task['id']}"
+                )
+            ])
+        
+        if len(active_tasks) > 5:
+            message += f"\n_...and {len(active_tasks) - 5} more tasks_\n"
+            keyboard.append([InlineKeyboardButton("📋 View All Tasks", callback_data="view_all_tasks")])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(message, reply_markup=reply_markup, parse_mode="Markdown")
+        
+    except Exception as e:
+        logger.error(f"❌ Error showing quick task list: {e}")
+        await update.message.reply_text(f"❌ Error fetching tasks: {e}")
+
+async def handle_quick_done_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle quick 'mark as done' button clicks."""
+    query = update.callback_query
+    await query.answer()
+    
+    if not is_authenticated(context):
+        await query.edit_message_text("❌ You need to log in first.")
+        return
+    
+    callback_data = query.data
+    
+    if callback_data == "view_all_tasks":
+        # Redirect to full task list
+        context.user_data['task_page'] = 0
+        await show_task_page(update, context)
+        return
+    
+    # Extract task_id from callback_data (format: quick_done_TASKID)
+    task_id = callback_data.split('_')[-1]
+    
+    # Mark task as done
+    try:
+        endpoint = f"{VIKUNJA_API}/tasks/{task_id}"
+        response = requests.post(endpoint, headers=get_headers(context), json={"done": True}, timeout=10)
+        
+        if response.status_code in [200, 204]:
+            # Get task title for confirmation
+            task = response.json()
+            task_title = task.get('title', 'Task')
+            
+            await query.edit_message_text(f"✅ Marked as done: *{task_title}*", parse_mode="Markdown")
+            
+            # Show updated task list after a short delay
+            await asyncio.sleep(0.5)
+            
+            # Create a new message with updated task list
+            await show_quick_task_list_new_message(update, context)
+        else:
+            await query.edit_message_text(f"❌ Failed to mark task as done ({response.status_code})")
+    except Exception as e:
+        logger.error(f"❌ Error marking task as done: {e}")
+        await query.edit_message_text(f"❌ Error: {e}")
+
+async def show_quick_task_list_new_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show task list in a new message (used after marking a task as done)."""
+    try:
+        active_tasks = get_active_tasks_from_projects(context)
+        
+        if not active_tasks:
+            # Send a new message instead of editing
+            if update.callback_query and update.callback_query.message:
+                await update.callback_query.message.reply_text("✅ All tasks completed!")
+            return
+        
+        display_tasks = active_tasks[:5]
+        
+        message = "📋 *Updated Task List*\n\n"
+        keyboard = []
+        
+        for i, task in enumerate(display_tasks, 1):
+            project = get_project_by_id(task.get("project_id"), context)
+            project_name = project.get('title', 'Unknown') if project else 'Unknown'
+            due_date = _format_display_date(task.get('due_date'))
+            
+            message += f"{i}. *{task.get('title', 'Untitled')}*\n"
+            message += f"   📁 {project_name} | 📅 {due_date}\n\n"
+            
+            keyboard.append([
+                InlineKeyboardButton(
+                    f"✅ Mark #{i} Done", 
+                    callback_data=f"quick_done_{task['id']}"
+                )
+            ])
+        
+        if len(active_tasks) > 5:
+            message += f"\n_...and {len(active_tasks) - 5} more tasks_\n"
+            keyboard.append([InlineKeyboardButton("📋 View All Tasks", callback_data="view_all_tasks")])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        # Send as new message
+        if update.callback_query and update.callback_query.message:
+            await update.callback_query.message.reply_text(message, reply_markup=reply_markup, parse_mode="Markdown")
+        
+    except Exception as e:
+        logger.error(f"❌ Error showing updated task list: {e}")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Start command - shows welcome message and instructions."""
@@ -738,6 +910,12 @@ def main():
     app.add_handler(CommandHandler("today", today_tasks))
     app.add_handler(task_management_handler)
     # Add other handlers like /newtask, /quicktask here if you have them
+    
+    # Handler for quick done callbacks (must be before plain message handler)
+    app.add_handler(CallbackQueryHandler(handle_quick_done_callback, pattern="^(quick_done_|view_all_tasks)"))
+    
+    # Handler for plain messages (auto-create tasks) - should be last
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_plain_message))
 
     logger.info("✅ Bot is running...")
     app.run_polling()

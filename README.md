@@ -7,6 +7,8 @@ A lightweight Telegram bot to create and manage Vikunja tasks using quick syntax
 - 🧠 Smart parsing (`*label`, `+project`, `!priority`, `tomorrow`)
 - 📆 View and edit tasks, labels, and due dates
 - 👥 Multi-user support with per-chat authentication
+- ⚡ Auto-create tasks from plain messages
+- ✅ Quick task completion with inline buttons
 - 🛠️ Minimal deployment using Python + Telegram + requests
 
 ## Setup
@@ -44,6 +46,18 @@ The bot now supports multiple users! Each user can authenticate with their own V
 - `/tasks` - View, edit, or complete your active tasks
 - `/today` - Show all tasks due today
 - `/status` - Check Vikunja API connection status
+
+### Quick Task Creation
+
+Simply send any message (without a command) to automatically create a task! After creating the task, the bot will show you a list of your active tasks with quick action buttons.
+
+**Examples:**
+- `Buy groceries tomorrow` - Creates a task with a due date
+- `Finish report !5` - Creates a high priority task (priority 5)
+- `Call John +Work` - Creates a task in the "Work" project
+
+**Quick Actions:**
+After creating a task, you'll see inline buttons to quickly mark tasks as done without entering any commands. Just tap "✅ Mark #1 Done" to complete a task instantly!
 
 ### Credential Storage
 
