@@ -16,10 +16,6 @@ A lightweight Telegram bot to create and manage Vikunja tasks using quick syntax
    ```env
    TELEGRAM_TOKEN=your_telegram_token
    VIKUNJA_API=http://your-vikunja-url/api/v1
-   
-   # Optional: Set default credentials for backward compatibility
-   VIKUNJA_USER=your_username
-   VIKUNJA_PASSWORD=your_password
    ```
 3. Install dependencies:
     ```pip install python-telegram-bot requests python-dotenv```
@@ -49,6 +45,11 @@ The bot now supports multiple users! Each user can authenticate with their own V
 - `/today` - Show all tasks due today
 - `/status` - Check Vikunja API connection status
 
-### Legacy Single-User Mode
+### Credential Storage
 
-If you set `VIKUNJA_USER` and `VIKUNJA_PASSWORD` in the `.env` file, users will be automatically authenticated with those credentials on `/start`. This provides backward compatibility with the single-user setup.
+Your credentials are securely saved to a local file (`user_credentials.json`) when you log in. This allows:
+- Automatic re-authentication when the bot restarts
+- Persistent sessions across bot restarts
+- No need to log in every time you use the bot
+
+To remove your saved credentials, use the `/logout` command.

@@ -2,6 +2,7 @@ import os
 import logging
 import requests
 import re
+import json
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -15,9 +16,7 @@ load_dotenv()
 # --- Configuration ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 VIKUNJA_API = os.getenv("VIKUNJA_API", "http://yourvikunjaip:port/api/v1")
-# Legacy support - can still use env vars for single user
-DEFAULT_USERNAME = os.getenv("VIKUNJA_USER")
-DEFAULT_PASSWORD = os.getenv("VIKUNJA_PASSWORD")
+CREDENTIALS_FILE = os.getenv("CREDENTIALS_FILE", "user_credentials.json")
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -37,7 +36,44 @@ PROJECT_CACHE_SECONDS = 60 # Cache projects for 60 seconds
 
 # --- Vikunja API Functions ---
 
-def get_user_session(context: ContextTypes.DEFAULT_TYPE):
+def load_saved_credentials():
+    """Load saved credentials from file."""
+    try:
+        if os.path.exists(CREDENTIALS_FILE):
+            with open(CREDENTIALS_FILE, 'r') as f:
+                return json.load(f)
+        return {}
+    except Exception as e:
+        logger.error(f"❌ Error loading credentials: {e}")
+        return {}
+
+def save_credentials(chat_id, username, password):
+    """Save credentials to file for persistence across bot restarts."""
+    try:
+        credentials = load_saved_credentials()
+        credentials[str(chat_id)] = {
+            'username': username,
+            'password': password
+        }
+        with open(CREDENTIALS_FILE, 'w') as f:
+            json.dump(credentials, f, indent=2)
+        logger.info(f"✅ Saved credentials for chat_id: {chat_id}")
+    except Exception as e:
+        logger.error(f"❌ Error saving credentials: {e}")
+
+def delete_saved_credentials(chat_id):
+    """Delete saved credentials for a user."""
+    try:
+        credentials = load_saved_credentials()
+        if str(chat_id) in credentials:
+            del credentials[str(chat_id)]
+            with open(CREDENTIALS_FILE, 'w') as f:
+                json.dump(credentials, f, indent=2)
+            logger.info(f"✅ Deleted credentials for chat_id: {chat_id}")
+    except Exception as e:
+        logger.error(f"❌ Error deleting credentials: {e}")
+
+def get_user_session(context: ContextTypes.DEFAULT_TYPE, chat_id=None):
     """Get or initialize the user session data."""
     if 'vikunja_token' not in context.user_data:
         context.user_data['vikunja_token'] = None
@@ -45,6 +81,16 @@ def get_user_session(context: ContextTypes.DEFAULT_TYPE):
         context.user_data['username'] = None
     if 'password' not in context.user_data:
         context.user_data['password'] = None
+    
+    # Try to load saved credentials if not already in session
+    if not context.user_data.get('username') and chat_id:
+        saved_creds = load_saved_credentials()
+        chat_id_str = str(chat_id)
+        if chat_id_str in saved_creds:
+            context.user_data['username'] = saved_creds[chat_id_str].get('username')
+            context.user_data['password'] = saved_creds[chat_id_str].get('password')
+            logger.info(f"✅ Loaded saved credentials for chat_id: {chat_id_str}")
+    
     return context.user_data
 
 def is_authenticated(context: ContextTypes.DEFAULT_TYPE):
@@ -52,7 +98,7 @@ def is_authenticated(context: ContextTypes.DEFAULT_TYPE):
     session = get_user_session(context)
     return session.get('vikunja_token') is not None
 
-def authenticate(context: ContextTypes.DEFAULT_TYPE, username=None, password=None):
+def authenticate(context: ContextTypes.DEFAULT_TYPE, username=None, password=None, save=False, chat_id=None):
     """Authenticate with the Vikunja API and get a token for the user."""
     session = get_user_session(context)
     
@@ -60,9 +106,11 @@ def authenticate(context: ContextTypes.DEFAULT_TYPE, username=None, password=Non
     if username and password:
         session['username'] = username
         session['password'] = password
+        if save and chat_id:
+            save_credentials(chat_id, username, password)
     else:
-        username = session.get('username') or DEFAULT_USERNAME
-        password = session.get('password') or DEFAULT_PASSWORD
+        username = session.get('username')
+        password = session.get('password')
     
     if not username or not password:
         logger.error("❌ No credentials available for authentication")
@@ -268,9 +316,12 @@ def create_task(data, context: ContextTypes.DEFAULT_TYPE):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Start command - shows welcome message and instructions."""
-    # Try to authenticate with default credentials if available
-    if DEFAULT_USERNAME and DEFAULT_PASSWORD and not is_authenticated(context):
-        authenticate(context, DEFAULT_USERNAME, DEFAULT_PASSWORD)
+    chat_id = update.effective_chat.id
+    
+    # Try to load and authenticate with saved credentials if available
+    session = get_user_session(context, chat_id)
+    if session.get('username') and session.get('password') and not is_authenticated(context):
+        authenticate(context)
     
     if is_authenticated(context):
         session = get_user_session(context)
@@ -320,6 +371,7 @@ async def login_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle password input and complete login."""
     password = update.message.text.strip()
     username = context.user_data.get('temp_username')
+    chat_id = update.effective_chat.id
     
     # Delete the message containing the password for security
     try:
@@ -329,11 +381,12 @@ async def login_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text("🔄 Authenticating...")
     
-    if authenticate(context, username, password):
+    if authenticate(context, username, password, save=True, chat_id=chat_id):
         # Clear temporary data
         context.user_data.pop('temp_username', None)
         await update.message.reply_text(
             f"✅ Successfully logged in as {username}!\n\n"
+            "Your credentials have been saved securely.\n\n"
             "You can now use:\n"
             "/tasks - View and manage tasks\n"
             "/today - Show tasks due today\n"
@@ -353,6 +406,10 @@ async def logout(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Log out the user."""
     session = get_user_session(context)
     username = session.get('username', 'Unknown')
+    chat_id = update.effective_chat.id
+    
+    # Delete saved credentials
+    delete_saved_credentials(chat_id)
     
     # Clear all user data
     context.user_data.clear()
@@ -360,6 +417,7 @@ async def logout(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"👋 Logged out successfully!\n\n"
         f"Previous user: {username}\n\n"
+        "Your saved credentials have been removed.\n\n"
         "Use /login to log in again."
     )
 
