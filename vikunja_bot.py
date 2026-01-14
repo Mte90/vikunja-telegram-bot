@@ -217,7 +217,11 @@ def _format_display_date(due_date_str):
     if not due_date_str or not isinstance(due_date_str, str):
         return None
     try:
-        return datetime.strptime(due_date_str, '%Y-%m-%dT%H:%M:%SZ').strftime('%Y-%m-%d')
+        parsed_date = datetime.strptime(due_date_str, '%Y-%m-%dT%H:%M:%SZ')
+        # Return None if date is 0001-01-01 (unset date marker)
+        if parsed_date.year == 1 and parsed_date.month == 1 and parsed_date.day == 1:
+            return None
+        return parsed_date.strftime('%Y-%m-%d')
     except ValueError:
         return None
 
