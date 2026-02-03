@@ -174,6 +174,50 @@ def get_headers(context: ContextTypes.DEFAULT_TYPE, chat_id=None):
         return {}
     return {"Authorization": f"Bearer {token}"}
 
+def vikunja_request(method, url, context: ContextTypes.DEFAULT_TYPE, chat_id=None, **kwargs):
+    """
+    Wrapper for requests to Vikunja API with automatic token refresh on 401.
+    
+    Args:
+        method: HTTP method ('get', 'post', 'put', 'delete', etc.)
+        url: Full URL for the API endpoint
+        context: User context for authentication
+        chat_id: Optional chat ID for session management
+        **kwargs: Additional arguments to pass to requests (json, params, timeout, etc.)
+    
+    Returns:
+        requests.Response object
+    """
+    # Add headers if not provided
+    if 'headers' not in kwargs:
+        kwargs['headers'] = get_headers(context, chat_id)
+    
+    # Set default timeout if not provided
+    if 'timeout' not in kwargs:
+        kwargs['timeout'] = 10
+    
+    # Make the initial request
+    request_func = getattr(requests, method.lower())
+    response = request_func(url, **kwargs)
+    
+    # If we get a 401 (Unauthorized), try to re-authenticate and retry once
+    if response.status_code == 401:
+        logger.warning(f"⚠️ Received 401 Unauthorized, attempting to re-authenticate...")
+        
+        # Try to re-authenticate using stored credentials
+        if authenticate(context, chat_id=chat_id):
+            logger.info(f"✅ Re-authentication successful, retrying request...")
+            
+            # Update headers with new token
+            kwargs['headers'] = get_headers(context, chat_id)
+            
+            # Retry the request with the new token
+            response = request_func(url, **kwargs)
+        else:
+            logger.error(f"❌ Re-authentication failed, returning 401 response")
+    
+    return response
+
 def get_all_projects_cached(context: ContextTypes.DEFAULT_TYPE):
     """Get all projects, using a short-term cache to avoid repeated API calls."""
     now = datetime.now()
@@ -186,7 +230,7 @@ def get_all_projects_cached(context: ContextTypes.DEFAULT_TYPE):
         return cache['data']
 
     try:
-        response = requests.get(f"{VIKUNJA_API}/projects", headers=get_headers(context), timeout=10)
+        response = vikunja_request('get', f"{VIKUNJA_API}/projects", context)
         if response.status_code == 200:
             projects = response.json()
             context.user_data['project_cache'] = {'data': projects, 'timestamp': now}
@@ -240,11 +284,11 @@ def get_active_tasks_from_projects(context: ContextTypes.DEFAULT_TYPE, date_filt
     
     for project in projects:
         params = {'due_date': date_filter} if date_filter else {}
-        response = requests.get(
+        response = vikunja_request(
+            'get',
             f"{VIKUNJA_API}/projects/{project['id']}/tasks", 
-            headers=get_headers(context), 
-            params=params,
-            timeout=10
+            context,
+            params=params
         )
         if response.status_code == 200:
             tasks_data = response.json()
@@ -344,7 +388,7 @@ def create_task(data, context: ContextTypes.DEFAULT_TYPE):
             payload["label_ids"] = data["label_ids"]
 
         logger.info(f"🔍 Creating task with payload: {payload}")
-        response = requests.put(f"{VIKUNJA_API}/projects/{payload['project_id']}/tasks", headers=get_headers(context), json=payload, timeout=10)
+        response = vikunja_request('put', f"{VIKUNJA_API}/projects/{payload['project_id']}/tasks", context, json=payload)
         
         if response.status_code in [200, 201]:
             logger.info(f"✅ Task created successfully: {response.json().get('title')}")
@@ -468,7 +512,7 @@ async def handle_quick_done_callback(update: Update, context: ContextTypes.DEFAU
     # Mark task as done
     try:
         endpoint = f"{VIKUNJA_API}/tasks/{task_id}"
-        response = requests.post(endpoint, headers=get_headers(context), json={"done": True}, timeout=10)
+        response = vikunja_request('post', endpoint, context, json={"done": True})
         
         if response.status_code in [200, 204]:
             # Get task title for confirmation
@@ -753,7 +797,7 @@ async def show_task_edit_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
     """Displays the action menu for a selected task."""
     task_id = context.user_data['selected_task_id']
     try:
-        response = requests.get(f"{VIKUNJA_API}/tasks/{task_id}", headers=get_headers(context), timeout=10)
+        response = vikunja_request('get', f"{VIKUNJA_API}/tasks/{task_id}", context)
         if response.status_code != 200:
             await update.callback_query.edit_message_text("❌ Failed to fetch task details.")
             return
@@ -808,10 +852,10 @@ async def task_edit_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         endpoint = f"{VIKUNJA_API}/tasks/{task_id}"
         try:
             if action == "done":
-                response = requests.post(endpoint, headers=get_headers(context), json={"done": True}, timeout=10)
+                response = vikunja_request('post', endpoint, context, json={"done": True})
                 success_msg = "✅ Task marked as done!"
             else: # delete
-                response = requests.delete(endpoint, headers=get_headers(context), timeout=10)
+                response = vikunja_request('delete', endpoint, context)
                 success_msg = "🗑️ Task deleted!"
 
             if response.status_code in [200, 204]:
@@ -844,7 +888,7 @@ async def handle_task_due_date_update(update: Update, context: ContextTypes.DEFA
             return TASK_EDIT_DUE
 
     try:
-        response = requests.post(f"{VIKUNJA_API}/tasks/{task_id}", headers=get_headers(context), json=payload, timeout=10)
+        response = vikunja_request('post', f"{VIKUNJA_API}/tasks/{task_id}", context, json=payload)
         if response.status_code in [200, 204]:
             await update.message.reply_text(f"✅ Due date updated successfully!")
         else:
